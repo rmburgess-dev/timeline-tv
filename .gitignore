@@ -1,0 +1,51 @@
+# Ignore rules for the Timeline TV add-on.
+#
+# Rule of thumb: only add-on sources, the build/test tooling that produces or
+# verifies the XPI, and the documents that ship with it belong in this repository.
+# Everything below is either generated, downloaded for local tooling, or scratch
+# state belonging to one machine.
+
+# ---------------------------------------------------------------------------
+# Build output and release artifacts
+# ---------------------------------------------------------------------------
+# Produced by tools/package.mjs; rebuilt by CI and never edited by hand.
+dist/
+*.xpi
+*.zip
+
+# ---------------------------------------------------------------------------
+# Secrets and local environment
+# ---------------------------------------------------------------------------
+# Store/API credentials belong in .env on this machine and must never be
+# committed. If a .env.example is ever added, it is explicitly allowed.
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Local tooling, not part of the add-on
+# ---------------------------------------------------------------------------
+# A locally unpacked GitHub CLI, if you used one to create the remote.
+.gh/
+node_modules/
+
+# ---------------------------------------------------------------------------
+# Editor and OS noise
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------------------
+# Logs and scratch files
+# ---------------------------------------------------------------------------
+*.log
+npm-debug.log*
+yarn-error.log*
+*.tmp
+*.bak

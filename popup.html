@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Timeline TV</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="icons/icon-48.png" alt="" width="22" height="22" />
+      <h1>Timeline TV</h1>
+    </header>
+
+    <button id="toggle" class="primary" type="button">Start slideshow</button>
+
+    <div class="panel">
+      <label class="row" id="columnsRow">
+        <span>Columns</span>
+        <select id="columns">
+          <option value="1">1 &mdash; single video</option>
+          <option value="2">2 columns</option>
+          <option value="3">3 columns</option>
+          <option value="4">4 columns</option>
+          <option value="5">5 columns</option>
+          <option value="6">6 columns</option>
+          <option value="7">7 columns</option>
+          <option value="8">8 columns</option>
+        </select>
+      </label>
+      <p class="hint" id="columnHint" hidden>
+        Past three, the graphics card may not be able to decode every stream &mdash; columns that
+        can't keep up show as amber on their progress bar.
+      </p>
+      <label class="row">
+        <span>Include images</span>
+        <input type="checkbox" id="includeImages" class="switch" />
+      </label>
+      <label class="row" id="secondsRow">
+        <span>Image duration</span>
+        <select id="imageSeconds">
+          <option value="2">2s</option>
+          <option value="3">3s</option>
+          <option value="5">5s</option>
+          <option value="8">8s</option>
+          <option value="10">10s</option>
+        </select>
+      </label>
+    </div>
+
+    <p id="status" role="status">Scroll your timeline, then start.</p>
+
+    <footer>
+      Every column starts muted &mdash; click a tile's speaker to unmute it, or the
+      speaker-with-arcs button to unmute them all.<br />
+      <kbd>Tab</kbd> switches tile &middot; <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> toggles &middot;
+      <kbd>Esc</kbd> closes
+      <span id="version" class="version"></span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

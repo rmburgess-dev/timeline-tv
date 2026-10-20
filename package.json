@@ -1,0 +1,18 @@
+{
+  "name": "timeline-tv",
+  "version": "1.0.1",
+  "private": true,
+  "description": "Firefox and Chrome extension that plays your X/Twitter timeline as a grid of simultaneous videos.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Robert Burgess",
+  "scripts": {
+    "test": "node tools/test.mjs .",
+    "icons": "node tools/make-icons.mjs icons && node tools/check-icons.mjs icons",
+    "build": "node tools/package.mjs .",
+    "verify": "npm run test && npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

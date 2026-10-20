@@ -1,0 +1,62 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test and package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure only extension sources are tracked
+        run: |
+          # A file that is tracked while .gitignore excludes it means generated or
+          # personal tooling slipped into the repository.
+          tracked_ignored=$(git ls-files -ci --exclude-standard)
+          if [ -n "$tracked_ignored" ]; then
+            echo "::error::These paths are gitignored but still tracked:"
+            echo "$tracked_ignored"
+            exit 1
+          fi
+          # Release artifacts are build output; they must never be committed.
+          artifacts=$(git ls-files 'dist/*' '*.xpi' '*.zip')
+          if [ -n "$artifacts" ]; then
+            echo "::error::Build artifacts are committed:"
+            echo "$artifacts"
+            exit 1
+          fi
+          echo "Tracked file set is clean."
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run verification harness
+        run: node tools/test.mjs .
+
+      - name: Check icons are reproducible
+        run: |
+          node tools/make-icons.mjs /tmp/icons-regen
+          for size in 16 32 48 96 128; do
+            cmp "icons/icon-$size.png" "/tmp/icons-regen/icon-$size.png" \
+              || { echo "icon-$size.png is out of date; run 'npm run icons'"; exit 1; }
+          done
+
+      - name: Build Firefox and Chrome packages
+        run: node tools/package.mjs .
+
+      - name: Lint with web-ext
+        run: npx --yes web-ext@8 lint --source-dir . --ignore-files 'tools/**' 'dist/**' '.github/**' 'package.json' 'NOTICE.md' 'README.md' 'LICENSE' 'page-guard.js'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timeline-tv
+          path: |
+            dist/*.xpi
+            dist/*.zip
+          if-no-files-found: error
