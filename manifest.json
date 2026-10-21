@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Timeline TV",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Watch your X/Twitter timeline as a grid of up to 8 videos playing at once.",
   "author": "Robert Burgess",
 
@@ -59,3 +59,4 @@
     "128": "icons/icon-128.png"
   }
 }
+

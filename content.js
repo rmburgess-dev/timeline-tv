@@ -70,10 +70,11 @@ const IDLE_PULL_MS = 1000
 // at most this often, and stops after this many rounds that find nothing. An optimistic search
 // must not become a page that scrolls forever underneath a grid it cannot fill. The cadence is
 // deliberately gentle: scrolling moves the timeline under clips that are already playing, so a
-// round is two screens rather than a burst.
+// round is three screens rather than a burst, and four empty rounds are needed before the end
+// note is believable.
 const TOPUP_INTERVAL_MS = 3500
-const TOPUP_SCROLLS = 2
-const TOPUP_DRY_ROUNDS = 3
+const TOPUP_SCROLLS = 3
+const TOPUP_DRY_ROUNDS = 4
 // How long a finished clip keeps its last frame while the next one is looked for.
 //
 // Emptying the tile the moment a clip ended made every normal advance flash "No more videos"
@@ -82,6 +83,11 @@ const TOPUP_DRY_ROUNDS = 3
 // in place instead; it is only taken down when a replacement is mounted, or after this long
 // with the queue drained and every search exhausted.
 const NO_MORE_GRACE_MS = 12000
+// A borrowed player can arrive already parked at the end of the timeline's own playback.
+// The seek to zero is best-effort, so do not retire a just-mounted clip before giving that
+// state a moment to clear. This is deliberately short: a stale end that cannot be recovered
+// should still give the column its next clip rather than freeze it forever.
+const MOUNT_END_GUARD_MS = 2000
 // How far apart two columns may start a player.
 //
 // Starting eight players in one tick means eight media pipelines, eight decoders and eight sets
@@ -572,6 +578,7 @@ const MOUNT_STAGGER_MS = 1000
       border-top: 1px solid var(--tt-border);
     }
     .group { display: flex; align-items: center; gap: 4px; }
+    .group.audio { margin-left: auto; }
     button {
       appearance: none; border: 0; background: transparent; color: inherit;
       cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
@@ -591,19 +598,10 @@ const MOUNT_STAGGER_MS = 1000
       font-size: 15px; line-height: 1; opacity: .9;
     }
     #tt-close:hover { opacity: 1; background: #272c30; }
-    .progress {
-      flex: 1 1 auto; height: 6px; min-width: 60px; border-radius: 999px;
-      background: var(--tt-track); cursor: pointer; overflow: hidden;
-    }
-    .progress-fill {
-      height: 100%; width: 100%; border-radius: 999px; background: var(--tt-accent);
-      transform: scaleX(0); transform-origin: left center; will-change: transform;
-    }
-    .time, .count {
+    .count {
       font-variant-numeric: tabular-nums; opacity: .82; white-space: nowrap;
+      min-width: 52px; text-align: center;
     }
-    .time { min-width: 46px; text-align: right; }
-    .count { min-width: 52px; text-align: center; margin-left: auto; }
     #tt-volume { width: 74px; accent-color: var(--tt-accent); cursor: pointer; }
     #tt-mute { width: 31px; height: 31px; }
     #tt-unmute { width: 31px; height: 31px; color: var(--tt-muted); }
@@ -648,13 +646,11 @@ const MOUNT_STAGGER_MS = 1000
         <div class="group">
           <button id="tt-prev" class="wide" title="Previous in focused tile (Left arrow)" aria-label="Previous">${svg('prev')}</button>
           <button id="tt-play" class="wide" title="Play/Pause focused tile (Space)" aria-label="Play or pause">${svg('pause')}</button>
-          <button id="tt-next" class="wide" title="Next in focused tile (Right arrow)" aria-label="Next">${svg('next')}</button>
+          <button id="tt-next" class="wide" title="Next video into the oldest column (Right arrow)" aria-label="Next">${svg('next')}</button>
         </div>
-        <div class="progress" id="tt-progress" title="Seek focused tile"><div class="progress-fill" id="tt-fill"></div></div>
-        <span class="time" id="tt-time">--:--</span>
-        <div class="group">
+        <div class="group audio">
           <button id="tt-mute" title="Mute / unmute every column" aria-label="Mute all">${svg('mute')}</button>
-          <input id="tt-volume" type="range" min="0" max="1" step="0.05" value="0" title="Volume" aria-label="Volume" />
+          <input id="tt-volume" type="range" min="0" max="1" step="0.05" value="0" title="Volume (Up/Down)" aria-label="Volume" />
           <button id="tt-unmute" title="Unmute every column at once (U)" aria-label="Unmute every column">${svg('soundAll')}</button>
           <button id="tt-rate" class="pill" title="Playback speed">1x</button>
         </div>
@@ -666,6 +662,7 @@ const MOUNT_STAGGER_MS = 1000
   `
 
   const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3]
+  const VOLUME_STEP = 0.05
 
   // ------------------------------------------------------------------- lane ---
 
@@ -705,6 +702,13 @@ const MOUNT_STAGGER_MS = 1000
       // the tile, paused on its last frame, so an ordinary advance never shows an empty tile.
       this.finished = false
       this.finishedAt = 0
+      // A reused page player may already be at the end of its previous playback. Track that
+      // separately from a real finish so the first paint cannot skip the new clip.
+      this.mountedAt = 0
+      this.mountTime = 0
+      this.endedBeforeMount = false
+      this.sawProgress = false
+      this.endRechecked = false
       // Why and where the last clip was retired. Shift+D reports it, so "it switched before
       // the end" can be answered with a reason instead of a guess.
       this.lastAdvance = null
@@ -747,10 +751,6 @@ const MOUNT_STAGGER_MS = 1000
       this.themeObserver = null
       this.collectTimer = null
       this.paintTimer = null
-      // Last values written to the shared progress bar, so a still clip does not replace its
-      // time text four times a second.
-      this.lastBarRatio = null
-      this.lastTimeLabel = null
       this.toastTimer = null
       this.loadToken = 0
       // Optimistic discovery state: when it last scrolled for clips, whether it is mid-search,
@@ -758,6 +758,9 @@ const MOUNT_STAGGER_MS = 1000
       this.lastTopUpAt = 0
       this.topUpRunning = false
       this.dryTopUps = 0
+      // How many items were present at the last paint. New material resets the discovery
+      // budget even when it arrived through X's own DOM updates rather than a gather() round.
+      this.itemsSeen = 0
 
       this.onKeyDown = this.onKeyDown.bind(this)
       this.onVisibilityChange = this.onVisibilityChange.bind(this)
@@ -863,6 +866,7 @@ const MOUNT_STAGGER_MS = 1000
       this.skips = 0
       this.topUpRunning = false
       this.dryTopUps = 0
+      this.itemsSeen = 0
       this.collector.reset()
     }
 
@@ -1051,6 +1055,13 @@ const MOUNT_STAGGER_MS = 1000
     /** One shared repaint for every tile plus the focused bar. */
     paintAll() {
       if (!this.active || document.hidden) return
+      // Any genuinely new item means the timeline has not stopped producing clips. Reset the
+      // "nothing came back" budget before checking finished lanes, so a lane cannot display
+      // "No more videos" in the same tick that X added more material.
+      if (this.items.length > this.itemsSeen) {
+        this.itemsSeen = this.items.length
+        this.dryTopUps = 0
+      }
       const now = performance.now()
       for (const lane of this.lanes) {
         // A finished clip is holding its last frame until a replacement is ready. It is not
@@ -1102,7 +1113,6 @@ const MOUNT_STAGGER_MS = 1000
       }
       this.keepAlive(now)
       this.topUpLanes(now)
-      this.refreshProgress()
     }
 
     /**
@@ -1194,6 +1204,7 @@ const MOUNT_STAGGER_MS = 1000
      * is waiting for anything at all to play, and useless when six columns are waiting for six.
      */
     async gather(target) {
+      const before = this.items.length
       for (let attempt = 0; attempt < TOPUP_SCROLLS; attempt++) {
         if (!this.active) return false
         this.collector.collect()
@@ -1204,7 +1215,11 @@ const MOUNT_STAGGER_MS = 1000
         this.collector.collect()
         if (this.items.length >= target) return true
       }
-      return false
+      // Reaching target is ideal, but growth is what proves the timeline is still producing.
+      // The old return value was "filled the whole target", which counted a round that found
+      // one or two new clips as dry; three sparse-but-productive rounds then stopped discovery
+      // while the grid was still half empty and made every finished column say "No more videos".
+      return this.items.length > before
     }
 
     /**
@@ -1252,6 +1267,27 @@ const MOUNT_STAGGER_MS = 1000
      */
     watchPlayer(lane, element, now) {
       if (lane.advancing || lane.finished) return
+      // A reused page player can arrive already ended, or seek-to-zero can be refused while
+      // the element still reports the old end. Do not spend the new clip on that first tick:
+      // retry the seek and play first. This is the "switches before it reaches the end" path.
+      if (lane.endedBeforeMount && !lane.sawProgress && now - (lane.mountedAt || 0) < MOUNT_END_GUARD_MS) {
+        const duration = element.duration
+        const atEnd =
+          element.ended ||
+          (Number.isFinite(duration) && duration > 1 && element.currentTime >= duration - 1)
+        if (atEnd) {
+          if (!lane.endRechecked) {
+            lane.endRechecked = true
+            try {
+              element.currentTime = 0
+            } catch {
+              /* the player may refuse the seek; play() is still worth one attempt */
+            }
+          }
+          this.tryPlay(lane, 2)
+          return
+        }
+      }
       if (this.clipIsOver(lane, element)) {
         this.onLaneEnded(lane.slot, 'measured')
         return
@@ -1269,8 +1305,21 @@ const MOUNT_STAGGER_MS = 1000
       const frames = quality ? quality.totalVideoFrames : 0
       const framesAdvanced = frames > lane.lastFrames
       lane.lastFrames = frames
+      if (element.currentTime < lane.lastTime - 0.01) {
+        // The seek to the start of a borrowed player landed after the first paint. Treat the
+        // backward jump as a fresh baseline; otherwise the watchdog would wait for the new
+        // clip to pass the old clip's final position before it saw any progress.
+        lane.lastTime = element.currentTime
+        lane.stalledSince = 0
+        lane.resumes = 0
+        lane.nudged = false
+        lane.stallRestarts = 0
+        lane.sawProgress = true
+        return
+      }
       if (element.currentTime > lane.lastTime + 0.01 || framesAdvanced) {
         // Real progress: reset the stall bookkeeping, the resume budget and the restart budget.
+        if (element.currentTime > lane.mountTime + 0.05 || framesAdvanced) lane.sawProgress = true
         lane.lastTime = Math.max(lane.lastTime, element.currentTime)
         lane.resumes = 0
         lane.stalledSince = 0
@@ -1392,9 +1441,6 @@ const MOUNT_STAGGER_MS = 1000
         prev: $('tt-prev'),
         play: $('tt-play'),
         next: $('tt-next'),
-        progress: $('tt-progress'),
-        fill: $('tt-fill'),
-        time: $('tt-time'),
         mute: $('tt-mute'),
         volume: $('tt-volume'),
         unmute: $('tt-unmute'),
@@ -1462,13 +1508,6 @@ const MOUNT_STAGGER_MS = 1000
       ui.prev.addEventListener('click', () => this.prevItem())
       ui.next.addEventListener('click', () => this.nextItem())
       ui.play.addEventListener('click', () => this.togglePlay())
-
-      ui.progress.addEventListener('click', (event) => {
-        const rect = ui.progress.getBoundingClientRect()
-        if (!rect.width) return
-        const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1)
-        this.seekFocused(ratio)
-      })
 
       ui.volume.addEventListener('input', () => {
         const value = clamp(parseFloat(ui.volume.value) || 0, 0, 1)
@@ -1575,6 +1614,14 @@ const MOUNT_STAGGER_MS = 1000
       const item = this.items[index]
       if (!item) return false
       this.unmountLane(lane, { keepHistory: true })
+      // Set the mount epoch before any handler or play() can run. mountVideo fills in the
+      // seek/ended details before it attaches listeners; otherwise a synchronous stale
+      // `ended` could retire the clip before the lane knew it had just mounted.
+      lane.mountedAt = performance.now()
+      lane.mountTime = 0
+      lane.endedBeforeMount = false
+      lane.sawProgress = false
+      lane.endRechecked = false
       const ok = item.kind === 'video' ? this.mountVideo(lane, item) : this.mountImage(lane, item)
       if (!ok) {
         this.showLaneEmpty(lane)
@@ -1585,7 +1632,7 @@ const MOUNT_STAGGER_MS = 1000
       lane.reroutes = 0
       // A new clip starts its own clock. Without this the watchdog compared the new player's
       // currentTime against the previous clip's, and advanced a healthy clip as "stalled".
-      lane.lastTime = 0
+      lane.lastTime = lane.mountTime
       lane.lastFrames = 0
       lane.nudged = false
       // A mount ends the "holding the last frame" state and inherits no retry budget from the
@@ -1648,6 +1695,10 @@ const MOUNT_STAGGER_MS = 1000
       lane.nativePause = null
       lane.nativeLoad = null
       lane.userPaused = false
+      lane.mountTime = element.currentTime
+      lane.endedBeforeMount = false
+      lane.sawProgress = false
+      lane.endRechecked = false
 
       lane.refs.stage.replaceChildren(element)
 
@@ -1713,8 +1764,16 @@ const MOUNT_STAGGER_MS = 1000
       try {
         element.currentTime = 0
       } catch {
-        /* a live player may refuse the seek; clipIsOver will not trust a stale ended flag */
+        /* a live player may refuse the seek; the mount guard gives it a chance to recover */
       }
+      lane.mountTime = element.currentTime
+      const mountDuration = element.duration
+      lane.endedBeforeMount = Boolean(
+        element.ended ||
+          (Number.isFinite(mountDuration) && mountDuration > 1 && element.currentTime >= mountDuration - 1)
+      )
+      lane.sawProgress = false
+      lane.endRechecked = false
       lane.refs.stage.replaceChildren(element)
 
       // Only events that change behaviour are bound. Progress painting is driven by
@@ -1840,8 +1899,28 @@ const MOUNT_STAGGER_MS = 1000
     async onLaneEnded(slot, reason = 'measured') {
       const lane = this.laneAt(slot)
       if (!lane || lane.idle || !this.active) return
+      // A user-paused clip stays held even if the page reports an end; resuming is the
+      // viewer's decision, not a reason to pull a different clip into the column.
+      if (lane.userPaused) return
       // `ended`, the clip's position and the stall watchdog can all notice the same finish.
       if (lane.advancing || lane.finished) return
+      // A player that arrived at the end of its previous playback can emit `ended` (or look
+      // ended to the position check) before the seek to zero has taken effect. Give it one
+      // retry instead of spending the clip instantly.
+      const now = performance.now()
+      const element = lane.video
+      if (lane.endedBeforeMount && !lane.sawProgress && lane.mountedAt && now - lane.mountedAt < MOUNT_END_GUARD_MS) {
+        if (!lane.endRechecked && element) {
+          lane.endRechecked = true
+          try {
+            element.currentTime = 0
+          } catch {
+            /* the seek may be refused; tryPlay() is still worth one attempt */
+          }
+        }
+        this.tryPlay(lane, 2)
+        return
+      }
       lane.advancing = true
       lane.stalledSince = 0
       try {
@@ -2138,36 +2217,6 @@ const MOUNT_STAGGER_MS = 1000
       this.refreshChrome()
     }
 
-    seekFocused(ratio) {
-      const lane = this.focusedLane
-      if (!lane || lane.finished) return
-      const element = lane.video
-      if (element && Number.isFinite(element.duration) && element.duration > 0) {
-        try {
-          element.currentTime = ratio * element.duration
-        } catch {
-          /* ignore */
-        }
-        // Seeking backwards used to leave the stall watchdog comparing the new position with
-        // the old one. A long rewind then looked exactly like a frozen player, and the column
-        // jumped to the next clip after twelve seconds. The seek is the new baseline.
-        lane.lastTime = element.currentTime
-        lane.stalledSince = 0
-        lane.nudged = false
-        lane.resumes = 0
-        this.paintLaneProgress(lane)
-        this.refreshProgress()
-        return
-      }
-      if (lane.image && lane.totalMs > 0) {
-        lane.leftMs = lane.totalMs * (1 - ratio)
-        lane.startedAt = performance.now()
-        this.restartLaneTimer(lane)
-        this.paintLaneProgress(lane)
-        this.refreshProgress()
-      }
-    }
-
     // -- per-lane timers ------------------------------------------------------
 
     restartLaneTimer(lane) {
@@ -2194,6 +2243,27 @@ const MOUNT_STAGGER_MS = 1000
     }
 
     // -- audio ----------------------------------------------------------------
+
+    /**
+     * Up/Down change the one volume shared by every column. Adjusting the volume is also an
+     * explicit unmute, so the keys always produce the level the toast reports; reaching zero
+     * leaves the master muted rather than silently at 0 with a misleading speaker icon.
+     */
+    adjustVolume(delta) {
+      if (!this.active) return
+      const current = clamp(Number(this.volume) || 0, 0, 1)
+      const next = clamp(Math.round((current + delta) * 100) / 100, 0, 1)
+      this.volume = next
+      this.masterMuted = next === 0
+      // The initial state is every column muted plus the master. A volume key is an explicit
+      // "make this audible" gesture, so clear that all-muted default; if the viewer has left
+      // some columns audible, keep their per-column choices intact.
+      if (next > 0 && this.lanes.length && this.lanes.every((lane) => lane.muted)) {
+        for (const lane of this.lanes) lane.muted = false
+      }
+      this.applyAudio()
+      this.toast(next === 0 ? 'Muted' : `Volume ${Math.round(next * 100)}%`)
+    }
 
     /** Master mute applies on top of each column's own mute flag. */
     applyAudio() {
@@ -2337,49 +2407,9 @@ const MOUNT_STAGGER_MS = 1000
     }
 
     refreshChrome() {
-      this.refreshProgress()
       this.refreshPlayUi()
       this.refreshAudioUi()
       this.refreshCount()
-    }
-
-    refreshProgress() {
-      const { fill, time } = this.ui
-      if (!fill) return
-      const lane = this.focusedLane
-      let ratio = 0
-      let label = '--:--'
-      if (lane) {
-        if (lane.finished) {
-          ratio = 1
-          label = '0:00'
-        } else if (lane.image && lane.totalMs > 0) {
-          const left = lane.userPaused
-            ? lane.leftMs
-            : Math.max(0, lane.leftMs - (performance.now() - lane.startedAt))
-          ratio = clamp((lane.totalMs - left) / lane.totalMs, 0, 1)
-          label = formatClock(left / 1000)
-        } else {
-          const element = lane.video
-          if (element) {
-            const duration = element.duration
-            ratio = Number.isFinite(duration) && duration > 0 ? element.currentTime / duration : 0
-            label =
-              Number.isFinite(duration) && duration > 0 ? formatClock(duration - element.currentTime) : '--:--'
-          }
-        }
-      }
-      ratio = clamp(ratio, 0, 1)
-      // These are written every paint tick. Only touch the DOM when the text or the ratio
-      // actually changed, which for a paused clip is never.
-      if (this.lastBarRatio !== ratio) {
-        this.lastBarRatio = ratio
-        fill.style.transform = `scaleX(${ratio})`
-      }
-      if (time && this.lastTimeLabel !== label) {
-        this.lastTimeLabel = label
-        time.textContent = label
-      }
     }
 
     refreshPlayUi() {
@@ -2545,7 +2575,17 @@ const MOUNT_STAGGER_MS = 1000
         `${lanes.length} cols · ${pct}% dropped · ${guard} · ${resumeTotal} resumes · ${accel}` +
           (early ? ` · ${early} retired early` : '')
       )
-      console.log('[timeline-tv] playback health', { lanes, decode })
+      console.log('[timeline-tv] playback health', {
+        lanes,
+        decode,
+        search: {
+          items: this.items.length,
+          nextIndex: this.nextIndex,
+          dryTopUps: this.dryTopUps,
+          topUpRunning: this.topUpRunning,
+          itemsSeen: this.itemsSeen
+        }
+      })
     }
 
     // -- keyboard -------------------------------------------------------------
@@ -2578,6 +2618,12 @@ const MOUNT_STAGGER_MS = 1000
           break
         case 'ArrowRight':
           this.nextItem()
+          break
+        case 'ArrowUp':
+          this.adjustVolume(VOLUME_STEP)
+          break
+        case 'ArrowDown':
+          this.adjustVolume(-VOLUME_STEP)
           break
         case ' ':
         case 'k':

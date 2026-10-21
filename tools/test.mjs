@@ -1020,7 +1020,7 @@ const missingInMarkup = shadowLookups.filter((id) => !markupIds.has(id))
 ok(missingInMarkup.length === 0, 'every id content.js looks up exists in the markup', JSON.stringify(missingInMarkup))
 const markupClasses = new Set([...markup.matchAll(/\bclass="([^"]+)"/g)].flatMap((m) => m[1].split(/\s+/)))
 const cssSelectors = [...new Set([...read('content.js').matchAll(/\.([a-z][\w-]*)\s*[{,]/g)].map((m) => m[1]))]
-const cssInMarkup = ['wrap', 'grid', 'tile', 'tile-stage', 'tile-foot', 'tile-idx', 'tile-bar', 'tile-fill', 'tile-mute', 'tile-note', 'bar', 'group', 'progress', 'progress-fill', 'time', 'count', 'pill', 'menu', 'toast']
+const cssInMarkup = ['wrap', 'grid', 'tile', 'tile-stage', 'tile-foot', 'tile-idx', 'tile-bar', 'tile-fill', 'tile-mute', 'tile-note', 'bar', 'group', 'count', 'pill', 'menu', 'toast']
 const unknownClasses = cssInMarkup.filter((c) => !markupClasses.has(c) && !read('content.js').includes(`.${c} {`))
 ok(unknownClasses.length === 0, 'CSS class vocabulary matches the markup', JSON.stringify(unknownClasses))
 const cssIds = new Set([...read('content.js').matchAll(/#(tt-[\w-]+)/g)].map((m) => m[1]))
@@ -1034,6 +1034,9 @@ ok(cssSelectors.length > 5, 'styles are defined in the content script', `${cssSe
 // whichever tweet happened to be focused and was wrong for every other column.
 ok(!/\btt-(like|repost|bookmark)\b/.test(markup), 'no like/repost/bookmark proxy buttons in the bar')
 ok(!/\.social\b/.test(contentCode), 'and no social-control CSS left behind')
+// Progress is per column now; the old shared seek/time strip is gone.
+ok(!markup.includes('tt-progress') && !markup.includes('tt-time'), 'no shared seek/time strip in the bar')
+ok(/class="tile-bar"/.test(contentCode) && /class="tile-fill"/.test(contentCode), 'the per-column progress bars remain')
 
 // The overlay has to follow X's current theme. X exposes its palette as --x-* custom
 // properties on :root; they inherit through the shadow boundary. The fallback chain keeps
@@ -2041,6 +2044,30 @@ section('T5j  a column always finds its way to the next clip')
   await app.send({ type: 'tt:stop' })
 }
 {
+  // A borrowed player can be reused while still parked at the end of the timeline's own
+  // playback, and its seek to zero can be refused. An `ended` event in that state must not
+  // spend the new clip before it has had a chance to start.
+  const app = loadContent()
+  const one = addTweet(app.document, { status: '5528a', videos: 1 })
+  const two = addTweet(app.document, { status: '5528b', videos: 1 })
+  one.videos[0].currentTime = 19.9
+  one.videos[0].ended = true
+  one.videos[0].paused = true
+  await app.send({ type: 'tt:toggle', options: { columns: 1, includeImages: false, imageSeconds: 3 } })
+  const host = app.document.querySelector('#timeline-tv-host')
+  const staged = () => host.shadowRoot.querySelector('.tile-stage').children[0]
+  // Put the player back at the old end after mount, as a refused seek would.
+  one.videos[0].currentTime = 19.9
+  one.videos[0].ended = true
+  one.videos[0].paused = true
+  one.videos[0].dispatch('ended', {})
+  app.tick()
+  await settle(30)
+  eq(staged(), one.videos[0], 'a reused player at its old end is retried, not skipped on the first ended event')
+  eq(two.videos[0].playCalls, 0, 'and the next clip is not pulled in immediately')
+  await app.send({ type: 'tt:stop' })
+}
+{
   // X can report a barely-initialised duration while the media source is setting up. A tiny
   // finite duration must not make the position check true at the very start of a clip.
   const app = loadContent()
@@ -2188,7 +2215,7 @@ section('T5j  a column always finds its way to the next clip')
 }
 
 {
-  // Seeking backwards moves the watchdog's baseline too. It used to keep comparing the new
+  // A page-driven rewind moves the watchdog's baseline too. It used to keep comparing the new
   // position with the old one, so a long rewind looked exactly like a frozen player and the
   // column jumped to the next clip after the stall timeout.
   const app = loadContent()
@@ -2202,9 +2229,10 @@ section('T5j  a column always finds its way to the next clip')
   one.videos[0].currentTime = 15
   app.tick() // the watchdog records 15s as the last known position
 
-  // Click the progress bar at 10%: a rewind from 15s to 2s.
-  host.shadowRoot.getElementById('tt-progress').dispatch('click', { clientX: 140 })
-  ok(one.videos[0].currentTime < 3, 'the click seeks the clip back', String(one.videos[0].currentTime))
+  // X seeks the reused player back to the start: a rewind from 15s to 2s.
+  one.videos[0].currentTime = 2
+  app.tick()
+  ok(one.videos[0].currentTime < 3, 'the player is back near the start')
 
   // It plays forward again, still below the old 15s mark for a long time. That is progress,
   // not a stall.
@@ -2311,10 +2339,13 @@ section('T5k  columns start one at a time, and nothing else waits')
   eq(stage(tiles[0]), first.videos[0], 'the last frame is held while the timeline is still being searched')
   eq(tiles[0].querySelector('.tile-note').textContent, '', 'with no "no more videos" while it is still looking')
 
-  // Past the grace period, with the search exhausted, the tile is allowed to say so.
-  app.advance(8000)
-  app.tick()
-  await settle(80) // let the final optimistic round finish
+  // Past the grace period, with the search exhausted, the tile is allowed to say so. Four
+  // empty rounds are deliberately required now; drive enough ticks for all of them to finish.
+  for (let round = 0; round < 8; round++) {
+    app.advance(4000)
+    app.tick()
+    await settle(40)
+  }
   app.tick()
   await settle(40)
   ok(tiles[0].classList.contains('is-empty'), 'after the grace period the finished tile is emptied')
@@ -2402,6 +2433,44 @@ section('T5l  discovery keeps going until the columns are full')
   await rounds(6)
   ok(app.scrolls() <= afterFull + 1, 'a full grid stops searching', `${app.scrolls() - afterFull} extra scrolls`)
   eq(staged().length, 8, 'and every column is still playing')
+  await app.send({ type: 'tt:stop' })
+}
+{
+  // Sparse timelines need more than three productive-but-incomplete rounds. This used to count
+  // every round that did not fill the whole target as dry, so it stopped with columns still
+  // empty and then let them announce the end of the timeline.
+  const app = loadContent()
+  const seed = [addTweet(app.document, { status: '6011', videos: 1 }), addTweet(app.document, { status: '6012', videos: 1 })]
+  const longClips = (tweet) => {
+    for (const video of tweet.videos) video.duration = 600
+    return tweet
+  }
+  seed.forEach(longClips)
+  await app.send({ type: 'tt:toggle', options: { columns: 8, includeImages: false, imageSeconds: 3 } })
+  const host = app.document.querySelector('#timeline-tv-host')
+  const staged = () =>
+    host.shadowRoot.querySelectorAll('.tile-stage').map((stage) => stage.children[0]).filter(Boolean)
+
+  let loaded = 0
+  app.onScroll((n) => {
+    // One new clip every two scrolls: each gather finds something, but never fills the target.
+    if (n % 2 !== 0 || loaded >= 8) return
+    longClips(addTweet(app.document, { status: String(6200 + loaded), videos: 1 }))
+    loaded += 1
+  })
+
+  const rounds = async (n) => {
+    for (let i = 0; i < n; i++) {
+      for (const video of staged()) video.currentTime += 2
+      app.advance(1100)
+      app.tick()
+      await settle(120)
+    }
+  }
+
+  await rounds(30)
+  eq(staged().length, 8, 'sparse discovery keeps going while each round finds only one clip')
+  ok(app.scrolls() > 6, 'and it kept scrolling past the first three productive rounds', `${app.scrolls()} scrolls`)
   await app.send({ type: 'tt:stop' })
 }
 {
@@ -2663,6 +2732,48 @@ section('T6  message API and keyboard')
 
   await app.send({ type: 'tt:stop' })
   ok(tweet.videos.every((v) => tweet.article.children.includes(v)), 'every visited video was restored')
+}
+
+{
+  // Up/Down are the global volume, not page scroll. They must update every column and the
+  // slider, unmute when raised from silence, and stay silent at zero.
+  const app = loadContent()
+  addTweet(app.document, { status: '1030', videos: 1 })
+  await app.send({ type: 'tt:toggle', options: { columns: 1, includeImages: false, imageSeconds: 3 } })
+  const host = app.document.querySelector('#timeline-tv-host')
+  const video = host.shadowRoot.querySelector('.tile-stage').children[0]
+  const slider = host.shadowRoot.getElementById('tt-volume')
+  eq(video.muted, true, 'the column starts silent')
+  eq(video.volume, 0, 'with the element volume parked at zero while muted')
+
+  let defaultPrevented = false
+  app.document.dispatch('keydown', {
+    key: 'ArrowUp',
+    preventDefault() {
+      defaultPrevented = true
+    }
+  })
+  await settle(10)
+  ok(defaultPrevented, 'ArrowUp is prevented from scrolling the page')
+  eq(video.muted, false, 'ArrowUp unmutes the master volume')
+  eq(Math.round(video.volume * 100), 55, 'and raises the shared volume by one step')
+  eq(slider.value, '0.55', 'the slider follows the keyboard')
+
+  app.document.dispatch('keydown', { key: 'ArrowDown' })
+  await settle(10)
+  eq(Math.round(video.volume * 100), 50, 'ArrowDown lowers the shared volume')
+
+  for (let i = 0; i < 10; i++) app.document.dispatch('keydown', { key: 'ArrowDown' })
+  await settle(10)
+  eq(video.volume, 0, 'ten more downs reach zero')
+  eq(video.muted, true, 'and zero is a real master mute')
+  eq(slider.value, '0', 'the slider shows silence')
+
+  app.document.dispatch('keydown', { key: 'ArrowUp' })
+  await settle(10)
+  eq(video.muted, false, 'ArrowUp from zero unmutes again')
+  eq(Math.round(video.volume * 100), 5, 'at one step above silence')
+  await app.send({ type: 'tt:stop' })
 }
 
 {

@@ -23,11 +23,11 @@ setting, without injecting any CSS into the page.
   past, in timeline order, and queues them.
 - **Keeps going — and keeps looking.** While any column is still empty it scrolls the page so
   X loads more of the timeline, which is what fills eight columns when the videos are far
-  apart. A search stops as soon as every column has a clip, and gives up after a few
-  consecutive rounds that come back empty, so it cannot scroll forever underneath a grid the
-  timeline cannot fill. A finished clip keeps its last frame on screen while the next one is
-  fetched, and the end-of-timeline note waits for the search to come back empty for about
-  twelve seconds before it appears.
+  apart. A search stops as soon as every column has a clip, and gives up after four
+  consecutive rounds — three screens each — that come back empty, so it cannot scroll forever
+  underneath a grid the timeline cannot fill. A finished clip keeps its last frame on screen
+  while the next one is fetched, and the end-of-timeline note waits until that search has
+  stopped and the frame has been held for twelve seconds before it appears.
 - **Per-column audio.** Every column has its own speaker button, and the bar has a master
   mute on top. Playback always starts silent — browsers only allow audible autoplay after
   a click inside the page, so unmuting is one explicit click.
@@ -44,10 +44,11 @@ setting, without injecting any CSS into the page.
   its current clip longest ago, and focuses it — so repeated presses rotate through the
   columns in order, one fresh video each. You never have to click or <kbd>Tab</kbd> to a
   tile first.
-- **A focused column.** The rest of the bar — seek, speed and volume — acts on the focused
-  tile: the newest one by default, or whichever tile you clicked (shown with an accent ring).
-- **Full playback control.** Play/pause, previous/next with per-column history, seekable
-  progress bar with time remaining, volume with mute, and speed from 0.25× to 3×.
+- **A focused column.** Play/pause and the per-column history act on the focused tile: the
+  newest one by default, or whichever tile you clicked (shown with an accent ring). Speed and
+  volume are shared by the whole grid.
+- **Full playback control.** Play/pause, previous/next with per-column history, progress on
+  each column's own bar, global volume with mute, and speed from 0.25× to 3×.
 - **Follows your X theme.** Light, dark, the chosen accent colour and high contrast are read
   from X's own `--x-*` tokens, so the overlay changes with the site instead of imposing a
   fixed palette. The popup follows the operating system's light/dark preference.
@@ -57,7 +58,9 @@ setting, without injecting any CSS into the page.
 | Key | Action |
 | --- | --- |
 | <kbd>Esc</kbd> | Close the overlay (every column's video goes back where it came from) |
-| <kbd>←</kbd> / <kbd>→</kbd> | Previous / next item — <kbd>→</kbd> always takes the oldest column |
+| <kbd>←</kbd> | Previous item in the focused column |
+| <kbd>→</kbd> | Move the next video into the oldest column |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Raise / lower the global volume (unmutes the all-muted default) |
 | <kbd>Space</kbd> or <kbd>K</kbd> | Play / pause the focused column |
 | <kbd>M</kbd> | Mute / unmute the master flag (per-column flags stay as they are) |
 | <kbd>U</kbd> | Unmute every column at once |
@@ -98,8 +101,8 @@ queue: 1 2 3 4 5 6
 - **A finished clip holds its last frame.** Ending a clip does not empty the tile. The spent
   player stays paused on its last frame until the next clip is ready, and the next clip
   replaces it in one step. If the queue is drained, the add-on keeps searching underneath
-  the grid; only when the queue is empty and the search has produced nothing for twelve
-  seconds does the tile say "No more videos". Emptying at `ended` made every normal advance
+  the grid; only when the queue is empty, four searches have come back empty, and the held
+  frame has waited twelve seconds does the tile say "No more videos". Emptying at `ended` made every normal advance
   flash that message while the next clip was still being fetched.
 - **A paused clip is resumed, never skipped.** There is deliberately no "paused too long,
   move on" rule for a clip the page keeps pausing: a stalled column resumes however long it
@@ -130,9 +133,9 @@ Build both browser packages from one checkout:
 git clone https://github.com/rmburgess-dev/timeline-tv.git
 cd timeline-tv
 node tools/package.mjs .
-# dist/timeline-tv-1.0.1.xpi        Firefox install file
-# dist/timeline-tv-1.0.1.zip        Firefox / AMO upload
-# dist/timeline-tv-1.0.1-chrome.zip Chrome Web Store upload
+# dist/timeline-tv-1.0.2.xpi        Firefox install file
+# dist/timeline-tv-1.0.2.zip        Firefox / AMO upload
+# dist/timeline-tv-1.0.2-chrome.zip Chrome Web Store upload
 # dist/chrome/                      Chrome "Load unpacked" directory
 ```
 
@@ -147,7 +150,7 @@ install a self-built add-on for good:
 
 1. `about:config` → set `xpinstall.signatures.required` to `false`.
 2. `about:addons` → gear icon → **Install Add-on From File…** → pick
-   `dist/timeline-tv-1.0.1.xpi`.
+   `dist/timeline-tv-1.0.2.xpi`.
 
 ### Firefox — any build (temporary)
 
@@ -159,7 +162,7 @@ repository's `manifest.json`. Temporary add-ons are removed when Firefox restart
 1. `chrome://extensions` → turn on **Developer mode**.
 2. **Load unpacked** → choose `dist/chrome/`.
 
-For the Chrome Web Store, upload `dist/timeline-tv-1.0.1-chrome.zip` at
+For the Chrome Web Store, upload `dist/timeline-tv-1.0.2-chrome.zip` at
 [chrome.google.com/webstore/devconsole](https://chrome.google.com/webstore/devconsole).
 
 **After updating either browser, reload the tab as well as the extension.** A content script
@@ -175,9 +178,9 @@ menu. Pin *Timeline TV* to the toolbar. The Firefox manifest also sets
 
 ### addons.mozilla.org and the Chrome Web Store
 
-Upload `dist/timeline-tv-1.0.1.zip` at
+Upload `dist/timeline-tv-1.0.2.zip` at
 [addons.mozilla.org/developers](https://addons.mozilla.org/developers/) for signing and
-distribution. Upload `dist/timeline-tv-1.0.1-chrome.zip` at the Chrome Web Store developer
+distribution. Upload `dist/timeline-tv-1.0.2-chrome.zip` at the Chrome Web Store developer
 console. Store accounts and review are required; the built archives are the artefacts those
 consoles expect.
 
@@ -362,7 +365,7 @@ extension never proxies or reports what you watch.
 ## Development
 
 ```bash
-node tools/test.mjs .     # 440 checks: both manifests, Chrome guard, markup, lanes, audio, stalls, icons
+node tools/test.mjs .     # 458 checks: both manifests, Chrome guard, markup, lanes, audio, stalls, icons
 node tools/package.mjs .  # builds Firefox .xpi/.zip and Chrome -chrome.zip + dist/chrome/
 node tools/make-icons.mjs icons   # regenerate the icon set
 node tools/check-icons.mjs icons  # render icons as ASCII to eyeball them
@@ -388,3 +391,4 @@ There is no build step for the add-on sources themselves; `content.js`,
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
+

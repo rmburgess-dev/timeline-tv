@@ -1,6 +1,6 @@
 {
   "name": "timeline-tv",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Firefox and Chrome extension that plays your X/Twitter timeline as a grid of simultaneous videos.",
   "type": "module",
@@ -16,3 +16,4 @@
     "node": ">=18"
   }
 }
+
